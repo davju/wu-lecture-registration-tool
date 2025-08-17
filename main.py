@@ -2,8 +2,9 @@ from playwright.sync_api import sync_playwright, Page, Locator
 import os
 import re
 from bs4 import BeautifulSoup
-from dotenv import load_dotenv
-
+from dotenv import load_dotenv, set_key
+from prompt_toolkit import print_formatted_text, prompt, HTML
+import sys
 from typing import Mapping, List
 load_dotenv()
 
@@ -43,8 +44,41 @@ def extract_lv_content(page:Page) -> Mapping[str, List[Locator]]:
 
     return lectures
 
-    
+
+
+def check_environment(dot_env_path=".env"):
+    if not load_dotenv() or not all([os.getenv("MATRIKELNUMMER"), os.getenv("PASSWORT")]):
+        # Not .env variables set or not .env file present
+        try:
+            f = open(".env", "x")
+        except FileExistsError:
+            pass
+
+        print_formatted_text("Credentials are not set")
+        
+        matrikelnummer = ""
+        password = ""
+
+        i = 0
+        while not all([matrikelnummer, password]):
+            if i > 0:
+                print_formatted_text(HTML('<ansired>One or more credentials where empty</ansired>'))
+            matrikelnummer = prompt("Enter your Matrikelnummer: ")
+            password = prompt("Enter your password: ")
+
+            i+=1
+
+
+        set_key(dot_env_path,"MATRIKELNUMMER", matrikelnummer)
+        set_key(dot_env_path ,"PASSWORT", password)
+
+        print_formatted_text("Credentials where sucessfully set. Programm will restart")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
 def main():
+
+    check_environment()
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
@@ -92,6 +126,8 @@ def main():
 
         for name, button in zip(lv_content["lecture_names"], lv_content["registration_buttons"]):
             print(name, button)
+
+
         time.sleep(5)
 
         browser.close()
