@@ -4,7 +4,7 @@ import re
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv, set_key
 from prompt_toolkit import print_formatted_text, prompt, HTML
-from prompt_toolkit.shortcuts import message_dialog, input_dialog, radiolist_dialog
+from prompt_toolkit.shortcuts import message_dialog, input_dialog, radiolist_dialog, checkboxlist_dialog
 import sys
 from typing import Mapping, List
 load_dotenv()
@@ -68,6 +68,22 @@ def select_and_load_lecture(lv_content):
         raise("Selection cancelled")
     
     lv_content["registration_buttons"][result].click()
+
+def select_and_register_lecture(lecture_information):
+    info_list = lecture_information[0]
+    result = checkboxlist_dialog(
+    title="Lecturer Selection Dialog ",
+    text="Which Lecturer would you like to register for",
+    values=[
+        (index, f"Instructor: {info['instructor']} | Capacity: {info['capacity']} | Registration starting {info['registration_time']}") for index, info in enumerate(info_list) if int(info["capacity"].split("/")[0].strip()) > 0
+    ]
+    ).run(in_thread=True)
+
+    if not result:
+        exit()
+    
+    return result
+
 
 
 
@@ -273,7 +289,8 @@ def main():
         page.wait_for_timeout(500)
         course_information = extract_course_data_with_indexes(page.content())
 
-        print(course_information)
+        select_and_register_lecture(course_information)
+
         time.sleep(5)
 
         browser.close()
