@@ -4,6 +4,7 @@ import re
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv, set_key
 from prompt_toolkit import print_formatted_text, prompt, HTML
+from prompt_toolkit.shortcuts import message_dialog, input_dialog, radiolist_dialog
 import sys
 from typing import Mapping, List
 load_dotenv()
@@ -21,28 +22,52 @@ def check_login_sucess(content:str, matrikelnummer:str) -> bool:
 
     return False
 
-def extract_lv_content(page:Page) -> Mapping[str, List[Locator]]:
+def extract_lv_content(page: Page) -> Mapping[str, List[Locator]]:
     lecture_table = page.get_by_role("table").nth(1)
-
     rows = lecture_table.locator("tr").all()
-
     lectures = {
-            "lecture_names": [], 
-            "registration_buttons": []
-        }
+        "lecture_names": [],
+        "registration_buttons": []
+    }
+    
     for row in rows:
         row_string = " ".join(row.text_content().strip().split())
-
         if not "LV anmelden" in row_string:
             continue
-        lecture_name = re.search(r'\b(?:LVP|VUE|PI)\s(.*?)\sLV anmelden', row_string).group(1)
-        register_button = row.get_by_role("button").get_by_title("Lehrveranstaltungsanmeldung")
         
-        #lectures["is_selectable"].append(not register_button.is_disabled())
-        lectures["lecture_names"].append(lecture_name)
-        lectures["registration_buttons"].append(register_button)
-
+        # Updated regex to handle the actual structure
+        # The pattern should capture text between LVP/VUE/PI and "LV anmelden"
+        match = re.search(r'\b(?:LVP|VUE|PI)\s+(.*?)\s+LV anmelden', row_string)
+        if not match:
+            continue
+            
+        lecture_name = match.group(1)
+        
+        # The registration links are <a> elements, not buttons
+        # Use the link with title "Lehrveranstaltungsanmeldung"
+        register_button = row.locator('a[title="Lehrveranstaltungsanmeldung"]')
+        
+        # Check if the locator actually found an element
+        if register_button.count() > 0:
+            lectures["lecture_names"].append(lecture_name)
+            lectures["registration_buttons"].append(register_button)
+    
     return lectures
+
+def select_and_load_lecture(lv_content):
+
+    result = radiolist_dialog(
+    title="Lecture Dialog",
+    text="Which Lecture would you like to register ?",
+    values=[
+        (index, lecture) for index, lecture in enumerate(lv_content["lecture_names"])
+    ]
+    ).run(in_thread=True)
+
+    if not result:
+        raise("Selection cancelled")
+    
+    lv_content["registration_buttons"][result].click()
 
 
 
@@ -54,7 +79,11 @@ def check_environment(dot_env_path=".env"):
         except FileExistsError:
             pass
 
-        print_formatted_text("Credentials are not set")
+        message_dialog(
+        title='Credentials',
+        text='"Credentials are not set"', ok_text="Set").run()
+
+        
         
         matrikelnummer = ""
         password = ""
@@ -62,9 +91,14 @@ def check_environment(dot_env_path=".env"):
         i = 0
         while not all([matrikelnummer, password]):
             if i > 0:
-                print_formatted_text(HTML('<ansired>One or more credentials where empty</ansired>'))
-            matrikelnummer = prompt("Enter your Matrikelnummer: ")
-            password = prompt("Enter your password: ")
+                message_dialog(HTML('<ansired>One or more credentials where empty</ansired>')).run()
+            matrikelnummer = input_dialog(
+                title='Input your Matrikelnummer',
+                text='Please type your matrikelnummer').run()
+            #matrikelnummer = prompt("Enter your Matrikelnummer: ")
+            password = input_dialog(
+                title='Input your Password',
+                text='Please type your password').run()
 
             i+=1
 
@@ -75,6 +109,113 @@ def check_environment(dot_env_path=".env"):
         print_formatted_text("Credentials where sucessfully set. Programm will restart")
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
+def extract_course_data_with_indexes(html_content):
+    """
+    Extracts course information from the HTML table including:
+    - Instructor names from td.ver_title div elements
+    - Capacity information from elements with title="freie LV-Plätze / LV-Kapazität"
+    - Registration timestamps from div.timestamp span elements
+    - Row indexes for mapping back to table elements
+    
+    Args:
+        html_content (str): HTML content as a string
+        
+    Returns:
+        tuple: (course_data_list, row_indexes_list)
+            - course_data_list: List of dictionaries with extracted course information
+            - row_indexes_list: List of integers representing the row index in the original table
+    """
+    # Parse the HTML content
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # Find all table rows that contain course information
+    course_rows = soup.find_all('tr', class_=['td0', 'td1'])
+    
+    course_data = []
+    row_indexes = []
+    
+    for index, row in enumerate(course_rows):
+        course_info = {}
+        
+        # Extract course ID and semester from the first column
+        ver_id_td = row.find('td', class_='ver_id')
+        if ver_id_td:
+            link = ver_id_td.find('a')
+            course_info['course_id'] = link.get_text(strip=True) if link else None
+            semester_span = ver_id_td.find('span')
+            course_info['semester'] = semester_span.get_text(strip=True) if semester_span else None
+        else:
+            course_info['course_id'] = None
+            course_info['semester'] = None
+        
+        # Extract instructor name from td.ver_title div
+        ver_title_td = row.find('td', class_='ver_title')
+        if ver_title_td:
+            div_element = ver_title_td.find('div')
+            course_info['instructor'] = div_element.get_text(strip=True) if div_element else None
+            
+            # Also extract the course title
+            title_span = ver_title_td.find('span')
+            course_info['course_title'] = title_span.get_text(strip=True) if title_span else None
+        else:
+            course_info['instructor'] = None
+            course_info['course_title'] = None
+        
+        # Extract capacity information
+        capacity_element = row.find(attrs={'title': 'freie LV-Plätze / LV-Kapazität'})
+        course_info['capacity'] = capacity_element.get_text(strip=True) if capacity_element else None
+        
+        # Extract registration timestamp
+        timestamp_div = row.find('div', class_='timestamp')
+        if timestamp_div:
+            span_element = timestamp_div.find('span')
+            course_info['registration_time'] = span_element.get_text(strip=True) if span_element else None
+        else:
+            course_info['registration_time'] = None
+        
+        # Extract registration status
+        registration_box = row.find('td', class_=['box', 'registration'])
+        if registration_box:
+            status_div = registration_box.find('div')
+            course_info['registration_status'] = status_div.get_text(strip=True) if status_div else None
+        else:
+            course_info['registration_status'] = None
+        
+        # Extract button/form information
+        form_element = row.find('form')
+        if form_element:
+            submit_button = form_element.find('input', {'type': 'submit'})
+            course_info['button_enabled'] = not submit_button.has_attr('disabled') if submit_button else False
+            course_info['button_value'] = submit_button.get('value', '') if submit_button else None
+            course_info['form_name'] = form_element.get('name', '')
+            course_info['form_id'] = form_element.get('id', '')
+            course_info['form_action'] = form_element.get('action', '')
+            course_info['form_method'] = form_element.get('method', 'post')
+            
+            # Extract all hidden form fields
+            hidden_inputs = form_element.find_all('input', {'type': 'hidden'})
+            course_info['hidden_fields'] = {}
+            for hidden_input in hidden_inputs:
+                name = hidden_input.get('name')
+                value = hidden_input.get('value')
+                if name:
+                    course_info['hidden_fields'][name] = value or ''
+        else:
+            course_info['button_enabled'] = False
+            course_info['button_value'] = None
+            course_info['form_name'] = None
+            course_info['form_id'] = None
+            course_info['form_action'] = None
+            course_info['form_method'] = None
+            course_info['hidden_fields'] = {}
+        
+        # Only add to results if we found at least some course information
+        if course_info['course_id'] or course_info['instructor']:
+            course_data.append(course_info)
+            row_indexes.append(index)
+    
+    return course_data, row_indexes
+
 
 def main():
 
@@ -84,6 +225,7 @@ def main():
         browser = p.chromium.launch(headless=False)
         page = browser.new_page()
         page.goto("https://lpis.wu.ac.at/lpis/")
+        page.wait_for_timeout(1000)
         textboxes = page.get_by_role("textbox")
         textboxes.nth(0).fill(os.getenv("MATRIKELNUMMER"))
         textboxes.nth(1).fill(os.getenv("PASSWORT"))
@@ -91,6 +233,8 @@ def main():
         submit_button = page.get_by_role("button", name="Login")
 
         submit_button.click()
+
+        page.wait_for_timeout(1000)
 
         content = page.content()
 
@@ -124,10 +268,12 @@ def main():
 
         lv_content = extract_lv_content(page)
 
-        for name, button in zip(lv_content["lecture_names"], lv_content["registration_buttons"]):
-            print(name, button)
+        select_and_load_lecture(lv_content)
 
+        page.wait_for_timeout(500)
+        course_information = extract_course_data_with_indexes(page.content())
 
+        print(course_information)
         time.sleep(5)
 
         browser.close()
