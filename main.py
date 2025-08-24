@@ -7,9 +7,40 @@ from prompt_toolkit import print_formatted_text, prompt, HTML
 from prompt_toolkit.shortcuts import message_dialog, input_dialog, radiolist_dialog, checkboxlist_dialog
 import sys
 from typing import Mapping, List
+
+import sqlite3
+
+
 load_dotenv()
 
 import time
+
+
+class DB_Interface():
+    def __init__(self):
+        pass
+
+    def init(self , db_file_name:str):
+        self.db = sqlite3.connect(db_file_name)
+
+        listOfTables = self.db.cursor().execute(
+            """SELECT tbl_name FROM sqlite_master WHERE type='table'
+            AND tbl_name='scheduled_registrations'; """).fetchall()
+        
+        if not listOfTables:
+            self.db.execute("CREATE TABLE scheduled_registrations(lecture_name, lecture_index, lecturer_name, lecturer_index, first_possible_registration_timestamp, registration_done, registration_failed)")
+
+
+    def insert_scheduled_registration(self, lecture_name, lecture_index, lecturer_name, lecturer_index, first_possible_registration_timestamp):
+        cur = self.db.cursor()
+        cur.execute("""
+            INSERT INTO scheduled_registrations VALUES
+            (?, ?, ?, ?, ?, NULL, NULL)
+        """, (lecture_name, lecture_index, lecturer_name, lecturer_index, first_possible_registration_timestamp))
+        self.db.commit()  # Don't forget to commit!
+        cur.close()
+
+        
 
 def check_login_sucess(content:str, matrikelnummer:str) -> bool:
     soup = BeautifulSoup(content, features="html.parser")
@@ -54,38 +85,82 @@ def extract_lv_content(page: Page) -> Mapping[str, List[Locator]]:
     
     return lectures
 
-def select_and_load_lecture(lv_content):
-
+def select_lecture(lv_content) -> int:
     result = radiolist_dialog(
     title="Lecture Dialog",
     text="Which Lecture would you like to register ?",
+    default=lv_content["lecture_names"][0],
     values=[
         (index, lecture) for index, lecture in enumerate(lv_content["lecture_names"])
     ]
     ).run(in_thread=True)
 
-    if not result:
-        raise("Selection cancelled")
+    return result
+
+def load_lecture(lv_content, lecture_index:int):
+    lv_content["registration_buttons"][lecture_index].click()
+
+
+def select_and_load_lecture(lv_content):
+
+    result = radiolist_dialog(
+    title="Lecture Dialog",
+    text="Which Lecture would you like to register ?",
+    default=lv_content["lecture_names"][0],
+    values=[
+        (index, lecture) for index, lecture in enumerate(lv_content["lecture_names"])
+    ]
+    ).run(in_thread=True)
     
     lv_content["registration_buttons"][result].click()
 
-def select_and_register_lecture(lecture_information):
+def select_and_register_lecturer(lecture_information, page:Page):
+    
     info_list = lecture_information[0]
+
+    lecture_list = [
+        (index, f"Instructor: {info['instructor']} | Capacity: {info['capacity']} | Registration starting {info['registration_time']}") for index, info in enumerate(info_list) if int(info["capacity"].split("/")[0].strip()) > 0
+    ]
     result = checkboxlist_dialog(
     title="Lecturer Selection Dialog ",
     text="Which Lecturer would you like to register for",
-    values=[
-        (index, f"Instructor: {info['instructor']} | Capacity: {info['capacity']} | Registration starting {info['registration_time']}") for index, info in enumerate(info_list) if int(info["capacity"].split("/")[0].strip()) > 0
-    ]
+    default_values=lecture_list[0],
+    values=lecture_list
     ).run(in_thread=True)
 
-    if not result:
-        exit()
+    lecture_table = page.get_by_role("table").nth(1)
+
+    selected_table_row = lecture_table.locator("tr").nth(result[0])
+
+    register_button = selected_table_row.locator('input[value="anmelden"]')
+
+    print(register_button)
+    
     
     return result
 
+def register_lecturer(page:Page, lecturer_index:int):
+    lecture_table = page.get_by_role("table").nth(1)
+
+    selected_table_row = lecture_table.locator("tr").nth(lecturer_index)
+
+    register_button = selected_table_row.locator('input[value="anmelden"]')
 
 
+def select_lecturer(lecture_information):
+    info_list = lecture_information[0]
+
+    lecture_list = [
+        (index, f"Instructor: {info['instructor']} | Capacity: {info['capacity']} | Registration starting {info['registration_time']}") for index, info in enumerate(info_list) if int(info["capacity"].split("/")[0].strip()) > 0
+    ]
+    result = radiolist_dialog(
+    title="Lecturer Selection Dialog ",
+    text="Which Lecturer would you like to register for",
+    default=lecture_list[0],
+    values=lecture_list
+    ).run(in_thread=True)
+
+    return result 
 
 def check_environment(dot_env_path=".env"):
     if not load_dotenv() or not all([os.getenv("MATRIKELNUMMER"), os.getenv("PASSWORT")]):
@@ -284,17 +359,28 @@ def main():
 
         lv_content = extract_lv_content(page)
 
-        select_and_load_lecture(lv_content)
+        selected_lecture_index = select_lecture(lv_content)
+
+        load_lecture(lv_content, selected_lecture_index)
 
         page.wait_for_timeout(500)
         course_information = extract_course_data_with_indexes(page.content())
 
-        select_and_register_lecture(course_information)
+        #select_and_register_lecturer(course_information, page)
 
-        time.sleep(5)
+        selected_lectuerer_index = select_lecturer(course_information)
+
+        register_lecturer(page, selected_lectuerer_index)
+
+        time.sleep(500)
 
         browser.close()
 
-
 if __name__ == "__main__":
-    main()
+    #main()    
+
+    db = DB_Interface() 
+
+    db.init("my_db")
+
+    db.insert_scheduled_registration("test", 1, "test2", 2, "14")
