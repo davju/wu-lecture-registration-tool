@@ -7,7 +7,7 @@ from prompt_toolkit import print_formatted_text, prompt, HTML
 from prompt_toolkit.shortcuts import message_dialog, input_dialog, radiolist_dialog, checkboxlist_dialog, yes_no_dialog
 import sys
 from typing import Mapping, List, Optional
-from type_definitions import LectureContent
+from type_definitions import LectureContent, CourseData
 
 import sqlite3
 
@@ -53,6 +53,54 @@ def check_login_sucess(content:str, matrikelnummer:str) -> bool:
             return True
 
     return False
+
+def select_study_track(page) -> None:
+    # For sync Playwright
+    select_element = page.locator('select').nth(0)
+    options = select_element.locator('option')
+    
+    count = options.count()
+    options_data = []
+    default_value = None
+    
+    # Extract option data
+    for i in range(count):
+        value = options.nth(i).get_attribute('value')
+        text = options.nth(i).text_content().strip()
+        title = options.nth(i).get_attribute('title')
+        selected = options.nth(i).get_attribute('selected')
+        
+        options_data.append({
+            'value': value,
+            'text': text,
+            'title': title
+        })
+        
+        if selected is not None:
+            default_value = value
+    
+    # Prepare radio list values (value, display_text)
+    radio_values = [
+        (opt['value'], f"{opt['text']} - {opt['title']}" if opt['title'] else opt['text']) 
+        for opt in options_data
+    ]
+    
+    # Show radio selection dialog
+    result = radiolist_dialog(
+        title='Select an option',
+        text='Please select one option:',
+        values=radio_values,
+        default=default_value
+    ).run(in_thread=True)
+
+    if not result:
+        exit()
+
+
+    submit_button = page.locator('input[name="cmd"]')
+
+    submit_button.click()
+
 
 def extract_lv_content(page: Page) -> LectureContent:
     lecture_table = page.get_by_role("table").nth(1)
@@ -225,7 +273,7 @@ def check_environment(dot_env_path=".env"):
         print_formatted_text("Credentials where sucessfully set. Programm will restart")
         os.execv(sys.executable, [sys.executable] + sys.argv)
 
-def extract_course_data_with_indexes(html_content):
+def extract_course_data_with_indexes(html_content) -> CourseData :
     """
     Extracts course information from the HTML table including:
     - Instructor names from td.ver_title div elements
@@ -350,7 +398,7 @@ def main():
 
         submit_button.click()
 
-        page.wait_for_timeout(1000)
+        page.wait_for_timeout(2000)
 
         content = page.content()
 
@@ -381,6 +429,10 @@ def main():
             lectures["lecture_names"].append(lecture_name)
             lectures["registration_buttons"].append(register_button)
         '''
+
+        select_study_track(page)
+
+        page.wait_for_timeout(5000)
 
         lv_content = extract_lv_content(page)
 
