@@ -4,9 +4,10 @@ import re
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv, set_key
 from prompt_toolkit import print_formatted_text, prompt, HTML
-from prompt_toolkit.shortcuts import message_dialog, input_dialog, radiolist_dialog, checkboxlist_dialog
+from prompt_toolkit.shortcuts import message_dialog, input_dialog, radiolist_dialog, checkboxlist_dialog, yes_no_dialog
 import sys
-from typing import Mapping, List
+from typing import Mapping, List, Optional
+from type_definitions import LectureContent
 
 import sqlite3
 
@@ -53,26 +54,37 @@ def check_login_sucess(content:str, matrikelnummer:str) -> bool:
 
     return False
 
-def extract_lv_content(page: Page) -> Mapping[str, List[Locator]]:
+def extract_lv_content(page: Page) -> LectureContent:
     lecture_table = page.get_by_role("table").nth(1)
     rows = lecture_table.locator("tr").all()
+
     lectures = {
         "lecture_names": [],
         "registration_buttons": []
     }
     
     for row in rows:
+        if not row:
+            raise ValueError("No Lecture table found")
         row_string = " ".join(row.text_content().strip().split())
-        if not "LV anmelden" in row_string:
-            continue
+        #if not "LV anmelden" in row_string or "Anmeldung" in row_string:
+        #    continue
         
         # Updated regex to handle the actual structure
         # The pattern should capture text between LVP/VUE/PI and "LV anmelden"
-        match = re.search(r'\b(?:LVP|VUE|PI)\s+(.*?)\s+LV anmelden', row_string)
-        if not match:
+        print(row_string)
+        match_lecture = re.search(r'\b(?:LVP|VUE|PI)\s+(.*?)\s+LV anmelden', row_string)
+        match_registered_lecture = re.search(r'^LVP\s+.*?\s+LVP\s+\d+\s+.+?\s+\(Anmeldung\s+\d{2}\.\d{2}\.\d{4}\s+\d{2}:\d{2}\)', row_string)
+
+        if not match_lecture and not match_registered_lecture:
             continue
-            
-        lecture_name = match.group(1)
+        if match_registered_lecture:
+            lecture_name = match_registered_lecture.group()
+
+            lectures["lecture_names"].append(lecture_name)
+            lectures["registration_buttons"].append(None) # Already registered lecture can not be registered again must be handled later
+            continue
+        lecture_name = match_lecture.group(1)
         
         # The registration links are <a> elements, not buttons
         # Use the link with title "Lehrveranstaltungsanmeldung"
@@ -82,19 +94,32 @@ def extract_lv_content(page: Page) -> Mapping[str, List[Locator]]:
         if register_button.count() > 0:
             lectures["lecture_names"].append(lecture_name)
             lectures["registration_buttons"].append(register_button)
-    
+
     return lectures
 
-def select_lecture(lv_content) -> int:
-    result = radiolist_dialog(
-    title="Lecture Dialog",
-    text="Which Lecture would you like to register ?",
-    default=lv_content["lecture_names"][0],
-    values=[
-        (index, lecture) for index, lecture in enumerate(lv_content["lecture_names"])
-    ]
-    ).run(in_thread=True)
+def select_lecture(lv_content) -> int | None:
+    try:
+        result = radiolist_dialog(
+        title="Lecture Dialog",
+        text="Which Lecture would you like to register ?",
+        default=lv_content["lecture_names"][0],
+        values=[
+            (index, lecture) for index, lecture in enumerate(lv_content["lecture_names"]) if lv_content["registration_buttons"][index] is not None
+        ]
+        ).run(in_thread=True)
+    except AssertionError as e:
+        display_registered = yes_no_dialog(
+            "Lecture error",
+            "No lectures to register for where found. Do you want to display the registered lectures ?"
+        ).run(in_thread=True)
 
+        if not display_registered:
+            return None
+        
+        print_formatted_text(lv_content["lecture_names"])
+
+        return None
+        
     return result
 
 def load_lecture(lv_content, lecture_index:int):
@@ -359,7 +384,17 @@ def main():
 
         lv_content = extract_lv_content(page)
 
+
         selected_lecture_index = select_lecture(lv_content)
+
+
+        if not selected_lecture_index:
+            message_dialog(
+                "Quit Programm",
+                "Programm will quit now"
+            ).run(in_thread=True)
+            exit()
+
 
         load_lecture(lv_content, selected_lecture_index)
 
@@ -377,7 +412,7 @@ def main():
         browser.close()
 
 if __name__ == "__main__":
-    #main()    
+    main()    
 
     db = DB_Interface() 
 
